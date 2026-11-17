@@ -54,6 +54,8 @@ class Config:
     twilio_token: str = ""
     twilio_from: str = ""
     alert_to: str = ""
+    ntfy_topic: str = ""
+    ntfy_server: str = "https://ntfy.sh"
 
     @staticmethod
     def from_env() -> "Config":
@@ -71,6 +73,8 @@ class Config:
             twilio_token=env("TWILIO_AUTH_TOKEN", ""),
             twilio_from=env("TWILIO_FROM", ""),
             alert_to=env("ALERT_TO", ""),
+            ntfy_topic=env("NTFY_TOPIC", "").strip(),
+            ntfy_server=env("NTFY_SERVER", "https://ntfy.sh").strip().rstrip("/"),
         )
 
 
@@ -246,10 +250,28 @@ def build_message(cfg: Config, status: str, results: list[VariantResult]) -> str
     return f"{cfg.movie_query.title()} is not listed in {city} yet."
 
 
-def send_sms(cfg: Config, body: str, dry_run: bool = False) -> None:
-    if dry_run:
-        print(f"[dry-run] SMS to {cfg.alert_to or '(ALERT_TO unset)'}: {body}")
-        return
+def _send_ntfy(cfg: Config, body: str) -> None:
+    """Push notification through ntfy (free, no account; the topic name is the 'password')."""
+    import urllib.request
+
+    req = urllib.request.Request(
+        f"{cfg.ntfy_server}/{cfg.ntfy_topic}",
+        data=body.encode("utf-8"),
+        headers={
+            "Title": "Doomsday watcher",
+            "Priority": "high",
+            "Tags": "movie_camera",
+            "User-Agent": "doomsday-watcher/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"ntfy returned HTTP {resp.status}")
+
+
+def _send_twilio(cfg: Config, body: str) -> None:
+    """Optional SMS via Twilio. Needs a paid/regulated number in India, so it's opt-in."""
     missing = [k for k, v in {
         "TWILIO_ACCOUNT_SID": cfg.twilio_sid, "TWILIO_AUTH_TOKEN": cfg.twilio_token,
         "TWILIO_FROM": cfg.twilio_from, "ALERT_TO": cfg.alert_to}.items() if not v]
@@ -261,6 +283,30 @@ def send_sms(cfg: Config, body: str, dry_run: bool = False) -> None:
         to=cfg.alert_to, from_=cfg.twilio_from, body=body
     )
     logging.info("SMS queued (sid=%s)", msg.sid)
+
+
+def send_alert(cfg: Config, body: str, dry_run: bool = False) -> None:
+    """Send `body` to every configured channel; fail only if none of them worked."""
+    if dry_run:
+        print(f"[dry-run] alert: {body}")
+        return
+    channels = []
+    if cfg.ntfy_topic:
+        channels.append(("ntfy", _send_ntfy))
+    if cfg.twilio_sid:
+        channels.append(("SMS", _send_twilio))
+    if not channels:
+        raise RuntimeError("No alert channel configured. Set NTFY_TOPIC in .env (see README).")
+    errors = []
+    for name, send in channels:
+        try:
+            send(cfg, body)
+            logging.info("Alert sent via %s", name)
+        except Exception as exc:  # noqa: BLE001 - try the other channels before giving up
+            logging.exception("Alert via %s failed", name)
+            errors.append(f"{name}: {exc}")
+    if len(errors) == len(channels):
+        raise RuntimeError("; ".join(errors))
 
 
 # --------------------------------------------------------------------------- state
@@ -285,7 +331,7 @@ def run(cfg: Config, dry_run: bool) -> int:
         logging.exception("Check failed (%d in a row)", state["failures"])
         if state["failures"] == FAILURES_BEFORE_ALERT:
             try:
-                send_sms(cfg, f"Doomsday watcher has failed {state['failures']} runs in a row: {exc}"[:300], dry_run)
+                send_alert(cfg, f"Doomsday watcher has failed {state['failures']} runs in a row: {exc}"[:300], dry_run)
             except Exception:  # noqa: BLE001
                 logging.exception("Could not send failure SMS")
         if not dry_run:
@@ -300,12 +346,12 @@ def run(cfg: Config, dry_run: bool) -> int:
     alerted = state.get("alerted_status", "not_listed")
     try:
         if should_alert(alerted, status):
-            send_sms(cfg, message, dry_run)
+            send_alert(cfg, message, dry_run)
             alerted = status
         elif cfg.daily_status_sms:
-            send_sms(cfg, message, dry_run)
+            send_alert(cfg, message, dry_run)
     except Exception:  # noqa: BLE001 - keep alerted_status unchanged so we retry tomorrow
-        logging.exception("SMS failed; will retry on the next run")
+        logging.exception("Alert failed; will retry on the next run")
         state["failures"] = state.get("failures", 0) + 1
         if not dry_run:
             save_state(state)
@@ -324,8 +370,9 @@ def run(cfg: Config, dry_run: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--dry-run", action="store_true", help="print the SMS instead of sending; don't save state")
-    ap.add_argument("--test-sms", action="store_true", help="send a test SMS and exit")
+    ap.add_argument("--dry-run", action="store_true", help="print the alert instead of sending; don't save state")
+    ap.add_argument("--test-alert", "--test-sms", dest="test_alert", action="store_true",
+                    help="send a test alert and exit")
     ap.add_argument("--date", type=date.fromisoformat, help="override target date (YYYY-MM-DD), e.g. to test")
     args = ap.parse_args(argv)
 
@@ -338,8 +385,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.from_env()
     if args.date:
         cfg = Config(**{**cfg.__dict__, "target_date": args.date})
-    if args.test_sms:
-        send_sms(cfg, "Doomsday watcher: test SMS. If you can read this, alerts work.")
+    if args.test_alert:
+        send_alert(cfg, "Doomsday watcher: test alert. If you can read this, alerts work.")
+        print("Test alert sent.")
         return 0
     return run(cfg, args.dry_run)
 

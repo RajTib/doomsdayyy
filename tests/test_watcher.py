@@ -150,6 +150,36 @@ class Messages(unittest.TestCase):
         )
 
 
+class SendAlert(unittest.TestCase):
+    def test_no_channel_configured_raises_helpful_error(self):
+        with self.assertRaisesRegex(RuntimeError, "NTFY_TOPIC"):
+            watcher.send_alert(watcher.Config(), "hi")
+
+    def test_ntfy_posts_message_to_topic_url(self):
+        from unittest import mock
+
+        cfg = watcher.Config(ntfy_topic="my-topic")
+        resp = mock.MagicMock(status=200)
+        resp.__enter__.return_value = resp
+        with mock.patch("urllib.request.urlopen", return_value=resp) as urlopen:
+            watcher.send_alert(cfg, "tickets open")
+        req = urlopen.call_args.args[0]
+        self.assertEqual(req.full_url, "https://ntfy.sh/my-topic")
+        self.assertEqual(req.data, b"tickets open")
+
+    def test_one_failing_channel_is_not_fatal_but_all_failing_is(self):
+        from unittest import mock
+
+        cfg = watcher.Config(ntfy_topic="t", twilio_sid="x")
+        with mock.patch.object(watcher, "_send_ntfy"), \
+                mock.patch.object(watcher, "_send_twilio", side_effect=RuntimeError("no")):
+            watcher.send_alert(cfg, "hi")  # ntfy worked, twilio failed -> ok
+        with mock.patch.object(watcher, "_send_ntfy", side_effect=RuntimeError("a")), \
+                mock.patch.object(watcher, "_send_twilio", side_effect=RuntimeError("b")):
+            with self.assertRaises(RuntimeError):
+                watcher.send_alert(cfg, "hi")
+
+
 class RunFlow(unittest.TestCase):
     """run() with the browser and Twilio stubbed out, state written to a temp dir."""
 
@@ -162,7 +192,7 @@ class RunFlow(unittest.TestCase):
         self.sms = []
         patches = [
             mock.patch.object(watcher, "STATE_FILE", Path(self.tmp.name) / "state.json"),
-            mock.patch.object(watcher, "send_sms", lambda cfg, body, dry_run=False: self.sms.append(body)),
+            mock.patch.object(watcher, "send_alert", lambda cfg, body, dry_run=False: self.sms.append(body)),
         ]
         for p in patches:
             p.start()
