@@ -20,17 +20,13 @@ You get an alert only when the status improves, so no repeat alerts. If the bot 
 ## Setup
 
 1. Install [Python](https://www.python.org/downloads/) (tick "Add python.exe to PATH") and Google Chrome.
-2. Install the free **ntfy** app on your phone and subscribe to a topic name only you know, e.g.
-   `doomsday-kanpur-x7q2m9` (make it long and random - anyone who guesses it can read your alerts).
-3. In PowerShell, inside the project folder:
+2. Install the free **ntfy** app on your phone.
+3. **Double-click `setup.bat`.** It installs what the bot needs, asks you to pick a topic name
+   (just press Enter to get a random private one), tells you to subscribe to that name in the ntfy app,
+   sends a test notification to your phone, and schedules the daily check at 09:00.
 
-```powershell
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-copy .env.example .env      # then open .env in Notepad and set NTFY_TOPIC to your topic name
-.venv\Scripts\python watcher.py --test-alert   # your phone should buzz within seconds
-.\setup_task.ps1                               # schedule the daily check (09:00)
-```
+No file editing needed. (Prefer the manual route? Copy `.env.example` to `.env`, set `NTFY_TOPIC`,
+then run `watcher.py --test-alert` and `setup_task.ps1`.)
 
 Requires desktop **Google Chrome**. BookMyShow's Cloudflare protection blocks headless browsers, so the bot
 drives a real Chrome window (moved off-screen) - it must run while you're logged in to Windows.

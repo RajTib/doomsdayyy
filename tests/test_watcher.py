@@ -180,6 +180,51 @@ class SendAlert(unittest.TestCase):
                 watcher.send_alert(cfg, "hi")
 
 
+class SetupWizard(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = Path(self.tmp.name) / ".env"
+
+    def test_set_env_value_replaces_existing_line_and_keeps_others(self):
+        self.env.write_text("A=1\nNTFY_TOPIC=\nB=2\n", encoding="utf-8")
+        watcher.set_env_value(self.env, "NTFY_TOPIC", "my-topic-1")
+        self.assertEqual(self.env.read_text(encoding="utf-8"), "A=1\nNTFY_TOPIC=my-topic-1\nB=2\n")
+
+    def test_set_env_value_appends_when_missing(self):
+        self.env.write_text("A=1\n", encoding="utf-8")
+        watcher.set_env_value(self.env, "NTFY_TOPIC", "my-topic-1")
+        self.assertEqual(self.env.read_text(encoding="utf-8"), "A=1\nNTFY_TOPIC=my-topic-1\n")
+
+    def test_wizard_saves_typed_topic_and_sends_test(self):
+        from unittest import mock
+
+        sent = []
+        with mock.patch("builtins.input", side_effect=["my-secret-topic", ""]), \
+                mock.patch.object(watcher, "send_alert", lambda cfg, body, dry_run=False: sent.append(cfg.ntfy_topic)), \
+                mock.patch("builtins.print"):
+            self.assertEqual(watcher.setup_wizard(self.env), 0)
+        self.assertIn("NTFY_TOPIC=my-secret-topic", self.env.read_text(encoding="utf-8"))
+        self.assertEqual(sent, ["my-secret-topic"])
+
+    def test_wizard_blank_answer_uses_generated_topic(self):
+        from unittest import mock
+
+        with mock.patch("builtins.input", side_effect=["", ""]), \
+                mock.patch.object(watcher, "send_alert"), mock.patch("builtins.print"):
+            self.assertEqual(watcher.setup_wizard(self.env), 0)
+        self.assertRegex(self.env.read_text(encoding="utf-8"), r"NTFY_TOPIC=doomsday-kanpur-[0-9a-f]{8}")
+
+    def test_wizard_rejects_bad_characters(self):
+        from unittest import mock
+
+        with mock.patch("builtins.input", side_effect=["bad topic!"]), mock.patch("builtins.print"):
+            self.assertEqual(watcher.setup_wizard(self.env), 1)
+        self.assertFalse(self.env.exists())
+
+
 class RunFlow(unittest.TestCase):
     """run() with the browser and Twilio stubbed out, state written to a temp dir."""
 

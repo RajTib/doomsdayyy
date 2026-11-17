@@ -309,6 +309,47 @@ def send_alert(cfg: Config, body: str, dry_run: bool = False) -> None:
         raise RuntimeError("; ".join(errors))
 
 
+# --------------------------------------------------------------------------- setup wizard
+def set_env_value(env_path: Path, key: str, value: str) -> None:
+    """Set KEY=value in a .env file, creating it from .env.example if it doesn't exist."""
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    else:
+        template = ROOT / ".env.example"
+        lines = template.read_text(encoding="utf-8").splitlines() if template.exists() else []
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def setup_wizard(env_path: Path = ROOT / ".env") -> int:
+    """Interactive first-time setup: pick an ntfy topic, save it, send a test alert."""
+    import secrets
+
+    suggestion = f"doomsday-kanpur-{secrets.token_hex(4)}"
+    print("\n1) Install the free 'ntfy' app on your phone (Play Store / App Store).")
+    print("2) Choose a private topic name. Anyone who guesses it can read your alerts,")
+    print("   so the random suggestion below is a good choice.\n")
+    topic = input(f"Topic name (just press Enter to use {suggestion}): ").strip() or suggestion
+    if not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", topic):
+        print("Use only letters, numbers, - and _ (6 to 64 characters). Please run setup again.")
+        return 1
+    set_env_value(env_path, "NTFY_TOPIC", topic)
+    print(f"\nSaved. Now in the ntfy app tap '+' and subscribe to exactly:\n\n    {topic}\n")
+    input("Press Enter once you have subscribed, and I'll send a test notification... ")
+    try:
+        send_alert(Config(ntfy_topic=topic), "Doomsday watcher is set up. If you can read this, alerts work.")
+    except Exception as exc:  # noqa: BLE001 - show a plain message instead of a traceback
+        print(f"\nCould not send the test notification: {exc}\nCheck your internet connection and try again.")
+        return 1
+    print("Test notification sent. Check your phone!")
+    return 0
+
+
 # --------------------------------------------------------------------------- state
 def load_state() -> dict:
     try:
@@ -373,8 +414,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="print the alert instead of sending; don't save state")
     ap.add_argument("--test-alert", "--test-sms", dest="test_alert", action="store_true",
                     help="send a test alert and exit")
+    ap.add_argument("--setup", action="store_true", help="first-time setup: choose a topic, save .env, test")
     ap.add_argument("--date", type=date.fromisoformat, help="override target date (YYYY-MM-DD), e.g. to test")
     args = ap.parse_args(argv)
+    if args.setup:
+        return setup_wizard()
 
     LOG_FILE.parent.mkdir(exist_ok=True)
     logging.basicConfig(
